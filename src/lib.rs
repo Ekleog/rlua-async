@@ -190,8 +190,12 @@ impl<'lua> FunctionExt<'lua> for Function<'lua> {
 }
 
 /// Extension trait for [`rlua::Chunk`]
+///
+/// Note that there is currently no `eval_async` function to match [`rlua::Chunk::eval`]. This is
+/// due to a missing function in the API of [`rlua::Chunk`]. See also [this pull
+/// request](https://github.com/kyren/rlua/pull/169).
 pub trait ChunkExt<'lua, 'a> {
-    // TODO: doc
+    /// Asynchronously execute this chunk of code. See also [`rlua::Chunk::exec`].
     fn exec_async<'fut>(
         self,
         ctx: Context<'lua>,
@@ -200,7 +204,8 @@ pub trait ChunkExt<'lua, 'a> {
         'lua: 'fut;
 
     /*
-    // TODO: doc
+    /// Asynchronously evaluate the chunk as either an expression or block. See also
+    /// [`rlua::Chunk::eval`].
     fn eval_async<'fut, Ret>(
         self,
         ctx: Context<'lua>,
@@ -210,7 +215,8 @@ pub trait ChunkExt<'lua, 'a> {
         Ret: 'fut + FromLuaMulti<'lua>;
     */
 
-    // TODO: doc
+    /// Load the chunk function and call it with the given arguments. See also
+    /// [`rlua::Chunk::call`].
     fn call_async<'fut, Arg, Ret>(
         self,
         ctx: Context<'lua>,
@@ -234,7 +240,7 @@ impl<'lua, 'a> ChunkExt<'lua, 'a> for Chunk<'lua, 'a> {
     }
 
     /*
-    // TODO: implement
+    // TODO: implement, then remove the note in the ChunkExt doc
     fn eval_async<'fut, Ret>(
         self,
         ctx: Context<'lua>,
