@@ -16,6 +16,8 @@ use futures::future;
 use rlua::*;
 use scoped_tls::scoped_thread_local;
 
+/// A "prelude" that provides all the extension traits that need to be in scope for the
+/// `async`-related functions to be usable.
 pub mod prelude {
     pub use super::{ContextExt, FunctionExt};
 }
@@ -29,7 +31,15 @@ pub mod prelude {
 //  * we can't clone the `Context`, as it's not `Clone`
 scoped_thread_local!(static FUTURE_CTX: *mut ());
 
+/// Extension trait for [`rlua::Context`]
 pub trait ContextExt<'lua> {
+    /// Create an asynchronous function.
+    ///
+    /// This works exactly like [`Context::create_function`], except that the function returns a
+    /// [`Future`] instead of just the result. Note that when this function is being called from
+    /// Lua, it will generate a coroutine, that will prevent any use of coroutines in the said Lua
+    /// code and is designed to be called from an `async`-compliant caller such as
+    /// [`FunctionExt::call_async`]
     fn create_async_function<Arg, Ret, RetFut, F>(self, func: F) -> Result<Function<'lua>>
     where
         Arg: FromLuaMulti<'lua>,
@@ -90,7 +100,13 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
     }
 }
 
+/// Extension trait for [`rlua::Function`]
 pub trait FunctionExt<'lua> {
+    /// Calls the function in an async-compliant way.
+    ///
+    /// By using this on the Rust side, you can recover as a [`Future`] the potentiall
+    /// [`Poll::Pending`] that might have been sent by eg. a downstream
+    /// [`ContextExt::create_async_function`]
     // TODO: make the return type `impl trait`... when GAT + existential types will be stable?
     fn call_async<'ret, Arg, Ret>(
         &self,
