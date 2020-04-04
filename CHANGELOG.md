@@ -1,6 +1,8 @@
 # 0.3.0 (???)
 
-* Add multiple `async` variants of `rlua` methods
+* Add multiple `async` variants:
+  * `ChunkExt::exec_async`, `ChunkExt::call_async`
+  * `FunctionExt::create_async_function_mut`
 
 # 0.2.0 (2020-04-04)
 
