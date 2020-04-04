@@ -42,7 +42,7 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
     fn create_async_function<Arg, Ret, RetFut, F>(self, func: F) -> Result<Function<'lua>>
     where
         Arg: FromLuaMulti<'lua>,
-        Ret: ToLua<'lua>, // TODO: is it possible to have `ToLuaMulti` here?
+        Ret: ToLuaMulti<'lua>,
         // TODO: 'static below should probably be 'lua instead -- need to figure out a way to work
         // around the 'static bound on create_function
         RetFut: 'static + Send + Future<Output = Result<Ret>>,
@@ -54,8 +54,15 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
                 FUTURE_CTX.with(|fut_ctx| {
                     let fut_ctx_ref = unsafe { &mut *(*fut_ctx as *mut task::Context) };
                     match Future::poll(fut.as_mut(), fut_ctx_ref) {
-                        Poll::Pending => ToLuaMulti::to_lua_multi((rlua::Value::Nil, false), ctx),
-                        Poll::Ready(v) => ToLuaMulti::to_lua_multi((v?, true), ctx),
+                        Poll::Pending => ToLuaMulti::to_lua_multi((false, 1), ctx),
+                        Poll::Ready(v) => {
+                            // Note: .into_iter() is basically .into_vec().into_iter(), so there is
+                            // no gain to be had by using it
+                            let mut v = ToLuaMulti::to_lua_multi(v?, ctx)?.into_vec();
+                            v.push(rlua::Value::Boolean(true));
+                            let len = v.len();
+                            ToLuaMulti::to_lua_multi((v, len), ctx)
+                        }
                     }
                 })
             })
@@ -67,9 +74,9 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
                     return function(...)
                         local poll = f(...)
                         while true do
-                            local res, ready = poll()
-                            if ready then
-                                return res
+                            local t, n = poll()
+                            if t[n] then
+                                return table.unpack(t, 1, n - 1)
                             else
                                 coroutine.yield()
                             end
