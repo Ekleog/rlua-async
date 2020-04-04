@@ -203,6 +203,8 @@ impl<'lua> FunctionExt<'lua> for Function<'lua> {
 mod tests {
     use super::*;
 
+    use std::time::Duration;
+
     use futures::executor;
 
     #[test]
@@ -226,6 +228,37 @@ mod tests {
                         .call_async::<_, usize>(lua_ctx, 2)
                 )
                 .unwrap(),
+                2
+            );
+        });
+    }
+
+    #[test]
+    fn actually_doing_things() {
+        let lua = Lua::new();
+
+        lua.context(|lua_ctx| {
+            let globals = lua_ctx.globals();
+
+            let f = lua_ctx
+                .create_async_function(|_, a: usize| async move {
+                    futures_timer::Delay::new(Duration::from_millis(50)).await;
+                    Ok(a + 1)
+                })
+                .unwrap();
+            globals.set("f", f).unwrap();
+
+            assert_eq!(
+                executor::block_on(
+                    lua_ctx
+                        .load(r#"function(a) return f(a) - 1 end"#)
+                        .set_name(b"example")
+                        .expect("failed to set name")
+                        .eval::<Function>()
+                        .expect("failed to eval")
+                        .call_async::<_, usize>(lua_ctx, 2)
+                )
+                .expect("failed to call"),
                 2
             );
         });
