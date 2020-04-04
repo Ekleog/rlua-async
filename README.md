@@ -23,3 +23,7 @@ not going to be asynchronous.
 
 To do that, you can use methods like
 [`FunctionExt::call_async`](https://docs.rs/rlua-async/latest/rlua_async/trait.FunctionExt.html#tymethod.call_async).
+
+## Changelog
+
+See [the Changelog](./CHANGELOG.md) for more details.

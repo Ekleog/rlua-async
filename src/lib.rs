@@ -1,5 +1,6 @@
 //! See the [README](https://github.com/Ekleog/rlua-async) for more general information
 // TODO: uncomment when stable #![doc(include = "../README.md")]
+// TODO: also add a link to the changelog somewhere (as a module?)
 
 // # Implementation details note
 //
