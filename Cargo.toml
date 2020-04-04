@@ -3,6 +3,17 @@ name = "rlua-async"
 version = "0.1.0"
 authors = ["Léo Gaspard <leo@gaspard.io>"]
 edition = "2018"
+description = "Async support for rlua, via coroutines"
+readme = "README.md"
+repository = "https://github.com/Ekleog/rlua-async"
+license = "MIT OR Apache-2.0"
+keywords = ["async", "lua"]
+categories = ["asynchronous"]
+
+[badges]
+is-it-maintained-issue-resolution = { repository = "Ekleog/rlua-async" }
+is-it-maintained-open-issues = { repository = "Ekleog/rlua-async" }
+maintenance = { status = "actively-developed" }
 
 [dependencies]
 futures = "0.3.4"
