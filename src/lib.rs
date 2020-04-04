@@ -67,14 +67,10 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
                 FUTURE_CTX.with(|fut_ctx| {
                     let fut_ctx_ref = unsafe { &mut *(*fut_ctx as *mut task::Context) };
                     match Future::poll(fut.as_mut(), fut_ctx_ref) {
-                        Poll::Pending => ToLuaMulti::to_lua_multi((false, 1), ctx),
+                        Poll::Pending => ToLuaMulti::to_lua_multi((rlua::Value::Nil, false), ctx),
                         Poll::Ready(v) => {
-                            // Note: .into_iter() is basically .into_vec().into_iter(), so there is
-                            // no gain to be had by using it
-                            let mut v = ToLuaMulti::to_lua_multi(v?, ctx)?.into_vec();
-                            v.push(rlua::Value::Boolean(true));
-                            let len = v.len();
-                            ToLuaMulti::to_lua_multi((v, len), ctx)
+                            let v = ToLuaMulti::to_lua_multi(v?, ctx)?.into_vec();
+                            ToLuaMulti::to_lua_multi((v, true), ctx)
                         }
                     }
                 })
@@ -87,19 +83,11 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
                     return function(...)
                         local poll = f(...)
                         while true do
-                            local t, n = poll()
-                            if n == 1 then
-                                if t then
-                                    return
-                                else
-                                    coroutine.yield()
-                                end
+                            local t, ready = poll()
+                            if ready then
+                                return table.unpack(t)
                             else
-                                if t[n] then
-                                    return table.unpack(t, 1, n - 1)
-                                else
-                                    coroutine.yield()
-                                end
+                                coroutine.yield()
                             end
                         end
                     end
