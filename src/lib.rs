@@ -17,7 +17,9 @@ use std::{
 };
 
 use futures::future;
-use rlua::*;
+use rlua::{
+    Chunk, Context, FromLuaMulti, Function, MultiValue, Result, Thread, ThreadStatus, ToLuaMulti,
+};
 use scoped_tls::scoped_thread_local;
 
 /// A "prelude" that provides all the extension traits that need to be in scope for the
@@ -311,6 +313,7 @@ mod tests {
     use std::time::Duration;
 
     use futures::executor;
+    use rlua::Lua;
 
     #[test]
     fn async_fn() {
