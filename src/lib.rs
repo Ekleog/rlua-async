@@ -62,6 +62,28 @@ pub trait ContextExt<'lua> {
         F: 'static + Send + FnMut(Context<'lua>, Arg) -> RetFut;
 }
 
+fn poller_fn<'lua, Ret, RetFut>(
+    ctx: Context<'lua>,
+    mut fut: Pin<Box<RetFut>>,
+) -> Result<Function<'lua>>
+where
+    Ret: ToLuaMulti<'lua>,
+    RetFut: 'static + Send + Future<Output = Result<Ret>>,
+{
+    ctx.create_function_mut(move |ctx, _: MultiValue<'lua>| {
+        FUTURE_CTX.with(|fut_ctx| {
+            let fut_ctx_ref = unsafe { &mut *(*fut_ctx as *mut task::Context) };
+            match Future::poll(fut.as_mut(), fut_ctx_ref) {
+                Poll::Pending => ToLuaMulti::to_lua_multi((rlua::Value::Nil, false), ctx),
+                Poll::Ready(v) => {
+                    let v = ToLuaMulti::to_lua_multi(v?, ctx)?.into_vec();
+                    ToLuaMulti::to_lua_multi((v, true), ctx)
+                }
+            }
+        })
+    })
+}
+
 static MAKE_POLLER: &[u8] = include_bytes!("make-poller.lua");
 
 impl<'lua> ContextExt<'lua> for Context<'lua> {
@@ -74,19 +96,8 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
     {
         // TODO: unify with `create_async_function_mut` (need to think about lifetimes)
         let wrapped_fun = self.create_function(move |ctx, arg| {
-            let mut fut = Box::pin(func(ctx, arg)); // TODO: maybe we can avoid this pin?
-            ctx.create_function_mut(move |ctx, _: MultiValue<'lua>| {
-                FUTURE_CTX.with(|fut_ctx| {
-                    let fut_ctx_ref = unsafe { &mut *(*fut_ctx as *mut task::Context) };
-                    match Future::poll(fut.as_mut(), fut_ctx_ref) {
-                        Poll::Pending => ToLuaMulti::to_lua_multi((rlua::Value::Nil, false), ctx),
-                        Poll::Ready(v) => {
-                            let v = ToLuaMulti::to_lua_multi(v?, ctx)?.into_vec();
-                            ToLuaMulti::to_lua_multi((v, true), ctx)
-                        }
-                    }
-                })
-            })
+            let fut = Box::pin(func(ctx, arg)); // TODO: maybe we can avoid this pin?
+            poller_fn(ctx, fut)
         })?;
 
         self.load(MAKE_POLLER)
@@ -106,19 +117,8 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
     {
         // TODO: unify with `create_async_function` (need to think about lifetimes)
         let wrapped_fun = self.create_function_mut(move |ctx, arg| {
-            let mut fut = Box::pin(func(ctx, arg)); // TODO: maybe we can avoid this pin?
-            ctx.create_function_mut(move |ctx, _: MultiValue<'lua>| {
-                FUTURE_CTX.with(|fut_ctx| {
-                    let fut_ctx_ref = unsafe { &mut *(*fut_ctx as *mut task::Context) };
-                    match Future::poll(fut.as_mut(), fut_ctx_ref) {
-                        Poll::Pending => ToLuaMulti::to_lua_multi((rlua::Value::Nil, false), ctx),
-                        Poll::Ready(v) => {
-                            let v = ToLuaMulti::to_lua_multi(v?, ctx)?.into_vec();
-                            ToLuaMulti::to_lua_multi((v, true), ctx)
-                        }
-                    }
-                })
-            })
+            let fut = Box::pin(func(ctx, arg)); // TODO: maybe we can avoid this pin?
+            poller_fn(ctx, fut)
         })?;
 
         self.load(MAKE_POLLER)
