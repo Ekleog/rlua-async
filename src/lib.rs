@@ -100,6 +100,51 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
     }
 }
 
+struct PollThreadFut<'lua, Arg, Ret> {
+    /// If set to Some(a), contains the arguments that will be passed at the first resume, ie. the
+    /// function arguments
+    args: Option<Arg>,
+    ctx: Context<'lua>,
+    thread: Thread<'lua>,
+    _phantom: PhantomData<Ret>,
+}
+
+impl<'lua, Arg, Ret> Future for PollThreadFut<'lua, Arg, Ret>
+where
+    Arg: ToLuaMulti<'lua>,
+    Ret: FromLuaMulti<'lua>,
+{
+    type Output = Result<Ret>;
+
+    fn poll(mut self: Pin<&mut Self>, fut_ctx: &mut task::Context) -> Poll<Result<Ret>> {
+        FUTURE_CTX.set(&(fut_ctx as *mut _ as *mut ()), || {
+            let taken_args = unsafe { self.as_mut().get_unchecked_mut().args.take() };
+
+            let resume_ret = if let Some(a) = taken_args {
+                self.thread.resume::<_, rlua::MultiValue>(a)
+            } else {
+                self.thread.resume::<_, rlua::MultiValue>(())
+            };
+
+            match resume_ret {
+                Err(e) => Poll::Ready(Err(e)),
+                Ok(v) => {
+                    match self.thread.status() {
+                        ThreadStatus::Resumable => Poll::Pending,
+
+                        ThreadStatus::Unresumable => {
+                            Poll::Ready(FromLuaMulti::from_lua_multi(v, self.ctx))
+                        }
+
+                        // The `Error` case should be caught by the `Err(e)` match above
+                        ThreadStatus::Error => unreachable!(),
+                    }
+                }
+            }
+        })
+    }
+}
+
 /// Extension trait for [`rlua::Function`]
 pub trait FunctionExt<'lua> {
     /// Calls the function in an async-compliant way.
@@ -130,55 +175,12 @@ impl<'lua> FunctionExt<'lua> for Function<'lua> {
         Arg: 'fut + ToLuaMulti<'lua>,
         Ret: 'fut + FromLuaMulti<'lua>,
     {
-        struct RetFut<'lua, Arg, Ret> {
-            args: Option<Arg>,
-            ctx: Context<'lua>,
-            thread: Thread<'lua>,
-            _phantom: PhantomData<Ret>,
-        }
-
-        impl<'lua, Arg, Ret> Future for RetFut<'lua, Arg, Ret>
-        where
-            Arg: ToLuaMulti<'lua>,
-            Ret: FromLuaMulti<'lua>,
-        {
-            type Output = Result<Ret>;
-
-            fn poll(mut self: Pin<&mut Self>, fut_ctx: &mut task::Context) -> Poll<Result<Ret>> {
-                FUTURE_CTX.set(&(fut_ctx as *mut _ as *mut ()), || {
-                    let taken_args = unsafe { self.as_mut().get_unchecked_mut().args.take() };
-
-                    let resume_ret = if let Some(a) = taken_args {
-                        self.thread.resume::<_, rlua::MultiValue>(a)
-                    } else {
-                        self.thread.resume::<_, rlua::MultiValue>(())
-                    };
-
-                    match resume_ret {
-                        Err(e) => Poll::Ready(Err(e)),
-                        Ok(v) => {
-                            match self.thread.status() {
-                                ThreadStatus::Resumable => Poll::Pending,
-
-                                ThreadStatus::Unresumable => {
-                                    Poll::Ready(FromLuaMulti::from_lua_multi(v, self.ctx))
-                                }
-
-                                // The `Error` case should be caught by the `Err(e)` match above
-                                ThreadStatus::Error => unreachable!(),
-                            }
-                        }
-                    }
-                })
-            }
-        }
-
         let thread = match ctx.create_thread(self.clone()) {
             Ok(thread) => thread,
             Err(e) => return Box::pin(future::err(e)),
         };
 
-        Box::pin(RetFut {
+        Box::pin(PollThreadFut {
             args: Some(args),
             ctx,
             thread,
