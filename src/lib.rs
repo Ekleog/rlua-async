@@ -52,8 +52,6 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
             let mut fut = Box::pin(func(ctx, arg)); // TODO: maybe we can avoid this pin?
             ctx.create_function_mut(move |ctx, _: MultiValue<'lua>| {
                 FUTURE_CTX.with(|fut_ctx| {
-                    // TODO: check that the thus-generated `&'a mut Context<'a>` has exactly the
-                    // proper `'a` lifetime, and not eg. `'static`
                     let fut_ctx_ref = unsafe { &mut *(*fut_ctx as *mut task::Context) };
                     match Future::poll(fut.as_mut(), fut_ctx_ref) {
                         // TODO: the first `false` below should really be a `nil`, but it looks
@@ -90,25 +88,27 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
 
 pub trait FunctionExt<'lua> {
     // TODO: make the return type `impl trait`... when GAT + existential types will be stable?
-    fn call_async<Arg, Ret>(
+    fn call_async<'ret, Arg, Ret>(
         &self,
         ctx: Context<'lua>,
         args: Arg,
-    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'lua>>
+    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'ret>>
     where
+        'lua: 'ret,
         Arg: ToLuaMulti<'lua>,
-        Ret: 'lua + FromLuaMulti<'lua>; // TODO: re-check 'lua bound?
+        Ret: 'ret + FromLuaMulti<'lua>;
 }
 
 impl<'lua> FunctionExt<'lua> for Function<'lua> {
-    fn call_async<Arg, Ret>(
+    fn call_async<'ret, Arg, Ret>(
         &self,
         ctx: Context<'lua>,
         args: Arg,
-    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'lua>>
+    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'ret>>
     where
+        'lua: 'ret,
         Arg: ToLuaMulti<'lua>,
-        Ret: 'lua + FromLuaMulti<'lua>,
+        Ret: 'ret + FromLuaMulti<'lua>,
     {
         struct RetFut<'lua, Ret> {
             ctx: Context<'lua>,
