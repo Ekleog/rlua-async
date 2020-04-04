@@ -120,43 +120,53 @@ pub trait FunctionExt<'lua> {
     /// [`Poll::Pending`] that might have been sent by eg. a downstream
     /// [`ContextExt::create_async_function`]
     // TODO: make the return type `impl trait`... when GAT + existential types will be stable?
-    fn call_async<'ret, Arg, Ret>(
+    fn call_async<'fut, Arg, Ret>(
         &self,
         ctx: Context<'lua>,
         args: Arg,
-    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'ret>>
+    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'fut>>
     where
-        'lua: 'ret,
-        Arg: ToLuaMulti<'lua>,
-        Ret: 'ret + FromLuaMulti<'lua>;
+        'lua: 'fut,
+        Arg: 'fut + ToLuaMulti<'lua>,
+        Ret: 'fut + FromLuaMulti<'lua>;
 }
 
 impl<'lua> FunctionExt<'lua> for Function<'lua> {
-    fn call_async<'ret, Arg, Ret>(
+    fn call_async<'fut, Arg, Ret>(
         &self,
         ctx: Context<'lua>,
         args: Arg,
-    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'ret>>
+    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'fut>>
     where
-        'lua: 'ret,
-        Arg: ToLuaMulti<'lua>,
-        Ret: 'ret + FromLuaMulti<'lua>,
+        'lua: 'fut,
+        Arg: 'fut + ToLuaMulti<'lua>,
+        Ret: 'fut + FromLuaMulti<'lua>,
     {
-        struct RetFut<'lua, Ret> {
+        struct RetFut<'lua, Arg, Ret> {
+            args: Option<Arg>,
             ctx: Context<'lua>,
             thread: Thread<'lua>,
             _phantom: PhantomData<Ret>,
         }
 
-        impl<'lua, Ret> Future for RetFut<'lua, Ret>
+        impl<'lua, Arg, Ret> Future for RetFut<'lua, Arg, Ret>
         where
+            Arg: ToLuaMulti<'lua>,
             Ret: FromLuaMulti<'lua>,
         {
             type Output = Result<Ret>;
 
-            fn poll(self: Pin<&mut Self>, fut_ctx: &mut task::Context) -> Poll<Result<Ret>> {
+            fn poll(mut self: Pin<&mut Self>, fut_ctx: &mut task::Context) -> Poll<Result<Ret>> {
                 FUTURE_CTX.set(&(fut_ctx as *mut _ as *mut ()), || {
-                    match self.thread.resume::<_, rlua::MultiValue>(()) {
+                    let taken_args = unsafe { self.as_mut().get_unchecked_mut().args.take() };
+
+                    let resume_ret = if let Some(a) = taken_args {
+                        self.thread.resume::<_, rlua::MultiValue>(a)
+                    } else {
+                        self.thread.resume::<_, rlua::MultiValue>(())
+                    };
+
+                    match resume_ret {
                         Err(e) => Poll::Ready(Err(e)),
                         Ok(v) => {
                             match self.thread.status() {
@@ -175,17 +185,13 @@ impl<'lua> FunctionExt<'lua> for Function<'lua> {
             }
         }
 
-        let bound_fun = match self.bind(args) {
-            Ok(bound_fun) => bound_fun,
-            Err(e) => return Box::pin(future::err(e)),
-        };
-
-        let thread = match ctx.create_thread(bound_fun) {
+        let thread = match ctx.create_thread(self.clone()) {
             Ok(thread) => thread,
             Err(e) => return Box::pin(future::err(e)),
         };
 
         Box::pin(RetFut {
+            args: Some(args),
             ctx,
             thread,
             _phantom: PhantomData,
