@@ -51,7 +51,18 @@ pub trait ContextExt<'lua> {
         // around the 'static bound on create_function
         RetFut: 'static + Send + Future<Output = Result<Ret>>,
         F: 'static + Send + Fn(Context<'lua>, Arg) -> RetFut;
+
+    fn create_async_function_mut<Arg, Ret, RetFut, F>(self, func: F) -> Result<Function<'lua>>
+    where
+        Arg: FromLuaMulti<'lua>,
+        Ret: ToLuaMulti<'lua>,
+        // TODO: 'static below should probably be 'lua instead -- need to figure out a way to work
+        // around the 'static bound on create_function_mut
+        RetFut: 'static + Send + Future<Output = Result<Ret>>,
+        F: 'static + Send + FnMut(Context<'lua>, Arg) -> RetFut;
 }
+
+static MAKE_POLLER: &[u8] = include_bytes!("make-poller.lua");
 
 impl<'lua> ContextExt<'lua> for Context<'lua> {
     fn create_async_function<Arg, Ret, RetFut, F>(self, func: F) -> Result<Function<'lua>>
@@ -61,6 +72,7 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
         RetFut: 'static + Send + Future<Output = Result<Ret>>,
         F: 'static + Send + Fn(Context<'lua>, Arg) -> RetFut,
     {
+        // TODO: unify with `create_async_function_mut` (need to think about lifetimes)
         let wrapped_fun = self.create_function(move |ctx, arg| {
             let mut fut = Box::pin(func(ctx, arg)); // TODO: maybe we can avoid this pin?
             ctx.create_function_mut(move |ctx, _: MultiValue<'lua>| {
@@ -77,26 +89,42 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
             })
         })?;
 
-        self.load(
-            r#"
-                function(f)
-                    return function(...)
-                        local poll = f(...)
-                        while true do
-                            local t, ready = poll()
-                            if ready then
-                                return table.unpack(t)
-                            else
-                                coroutine.yield()
-                            end
-                        end
-                    end
-                end
-            "#,
-        )
-        .set_name(b"coroutine yield helper")?
-        .eval::<Function<'lua>>()? // TODO: find some way to cache this eval, maybe?
-        .call(wrapped_fun)
+        self.load(MAKE_POLLER)
+            .set_name(b"coroutine yield helper")?
+            .eval::<Function<'lua>>()? // TODO: find some way to cache this eval, maybe?
+            .call(wrapped_fun)
+    }
+
+    fn create_async_function_mut<Arg, Ret, RetFut, F>(self, mut func: F) -> Result<Function<'lua>>
+    where
+        Arg: FromLuaMulti<'lua>,
+        Ret: ToLuaMulti<'lua>,
+        // TODO: 'static below should probably be 'lua instead -- need to figure out a way to work
+        // around the 'static bound on create_function_mut
+        RetFut: 'static + Send + Future<Output = Result<Ret>>,
+        F: 'static + Send + FnMut(Context<'lua>, Arg) -> RetFut,
+    {
+        // TODO: unify with `create_async_function` (need to think about lifetimes)
+        let wrapped_fun = self.create_function_mut(move |ctx, arg| {
+            let mut fut = Box::pin(func(ctx, arg)); // TODO: maybe we can avoid this pin?
+            ctx.create_function_mut(move |ctx, _: MultiValue<'lua>| {
+                FUTURE_CTX.with(|fut_ctx| {
+                    let fut_ctx_ref = unsafe { &mut *(*fut_ctx as *mut task::Context) };
+                    match Future::poll(fut.as_mut(), fut_ctx_ref) {
+                        Poll::Pending => ToLuaMulti::to_lua_multi((rlua::Value::Nil, false), ctx),
+                        Poll::Ready(v) => {
+                            let v = ToLuaMulti::to_lua_multi(v?, ctx)?.into_vec();
+                            ToLuaMulti::to_lua_multi((v, true), ctx)
+                        }
+                    }
+                })
+            })
+        })?;
+
+        self.load(MAKE_POLLER)
+            .set_name(b"coroutine yield helper")?
+            .eval::<Function<'lua>>()? // TODO: find some way to cache this eval, maybe?
+            .call(wrapped_fun)
     }
 }
 
@@ -278,12 +306,13 @@ impl<'lua, 'a> ChunkExt<'lua, 'a> for Chunk<'lua, 'a> {
 mod tests {
     use super::*;
 
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use futures::executor;
 
     #[test]
-    fn it_works() {
+    fn async_fn() {
         let lua = Lua::new();
 
         lua.context(|lua_ctx| {
@@ -309,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn actually_doing_things() {
+    fn actually_awaiting_fn() {
         let lua = Lua::new();
 
         lua.context(|lua_ctx| {
@@ -336,6 +365,41 @@ mod tests {
                 .expect("failed to call"),
                 2
             );
+        });
+    }
+
+    #[test]
+    fn async_fn_mut() {
+        let lua = Lua::new();
+
+        lua.context(|lua_ctx| {
+            let globals = lua_ctx.globals();
+
+            let v = Arc::new(Mutex::new(0));
+            let v_clone = v.clone();
+            let f = lua_ctx
+                .create_async_function_mut(move |_, a: usize| {
+                    *v_clone.lock().unwrap() += 1;
+                    future::ok(a + 1)
+                })
+                .unwrap();
+            globals.set("f", f).unwrap();
+
+            assert_eq!(*v.lock().unwrap(), 0);
+            assert_eq!(
+                executor::block_on(
+                    lua_ctx
+                        .load(r#"function(a) return f(a) - 1 end"#)
+                        .set_name(b"example")
+                        .expect("failed to set name")
+                        .eval::<Function>()
+                        .expect("failed to eval")
+                        .call_async::<_, usize>(lua_ctx, 2)
+                )
+                .expect("failed to call"),
+                2
+            );
+            assert_eq!(*v.lock().unwrap(), 1);
         });
     }
 
