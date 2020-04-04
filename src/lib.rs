@@ -88,16 +88,25 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
                         local poll = f(...)
                         while true do
                             local t, n = poll()
-                            if t[n] then
-                                return table.unpack(t, 1, n - 1)
+                            if n == 1 then
+                                if t then
+                                    return
+                                else
+                                    coroutine.yield()
+                                end
                             else
-                                coroutine.yield()
+                                if t[n] then
+                                    return table.unpack(t, 1, n - 1)
+                                else
+                                    coroutine.yield()
+                                end
                             end
                         end
                     end
                 end
             "#,
         )
+        .set_name(b"coroutine yield helper")?
         .eval::<Function<'lua>>()? // TODO: find some way to cache this eval, maybe?
         .call(wrapped_fun)
     }
