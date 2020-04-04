@@ -365,6 +365,16 @@ mod tests {
             .expect("failed to exec");
 
             assert_eq!(
+                executor::block_on(
+                    lua_ctx
+                        .load(r#"return foo(1)"#)
+                        .call_async::<_, usize>(lua_ctx, ()),
+                )
+                .expect("failed to call"),
+                3,
+            );
+
+            assert_eq!(
                 lua_ctx
                     .load(r#"foo(1)"#)
                     .eval::<usize>()
