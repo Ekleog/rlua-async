@@ -18,6 +18,11 @@ let
   pkgs = import pkgsSrc {
     overlays = [ rustOverlay ];
   };
+  rustNightlyChannel = pkgs.rustChannelOf {
+    date = "2020-03-12";
+    channel = "nightly";
+    sha256 = "0gjnl37hqalcw0c69chnc2r6n40a0w8w2bvwrmp3bz183wawp6fh";
+  };
   rustStableChannel = pkgs.rustChannelOf {
     date = "2020-03-12";
     channel = "stable";
