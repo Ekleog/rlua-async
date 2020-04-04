@@ -1,3 +1,6 @@
+//! See the [README](https://github.com/Ekleog/rlua-async) for more general information
+// TODO: uncomment when stable #![doc(include = "../README.md")]
+
 // # Implementation details note
 //
 // Having a `Poll::Pending` returned from a Rust `async` function will trigger a
