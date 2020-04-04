@@ -1,0 +1,10 @@
+[package]
+name = "rlua-async"
+version = "0.1.0"
+authors = ["Léo Gaspard <leo@gaspard.io>"]
+edition = "2018"
+
+[dependencies]
+futures = "0.3.4"
+rlua = "0.17.0"
+scoped-tls = "1.0.0"
