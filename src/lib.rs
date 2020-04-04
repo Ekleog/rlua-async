@@ -22,7 +22,7 @@ use scoped_tls::scoped_thread_local;
 /// A "prelude" that provides all the extension traits that need to be in scope for the
 /// `async`-related functions to be usable.
 pub mod prelude {
-    pub use super::{ContextExt, FunctionExt};
+    pub use super::{ChunkExt, ContextExt, FunctionExt};
 }
 
 // Safety invariant: This always points to a valid `task::Context`.
@@ -189,6 +189,85 @@ impl<'lua> FunctionExt<'lua> for Function<'lua> {
     }
 }
 
+/// Extension trait for [`rlua::Chunk`]
+pub trait ChunkExt<'lua, 'a> {
+    // TODO: doc
+    fn exec_async<'fut>(
+        self,
+        ctx: Context<'lua>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'fut>>
+    where
+        'lua: 'fut;
+
+    /*
+    // TODO: doc
+    fn eval_async<'fut, Ret>(
+        self,
+        ctx: Context<'lua>,
+    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'fut>>
+    where
+        'lua: 'fut,
+        Ret: 'fut + FromLuaMulti<'lua>;
+    */
+
+    // TODO: doc
+    fn call_async<'fut, Arg, Ret>(
+        self,
+        ctx: Context<'lua>,
+        args: Arg,
+    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'fut>>
+    where
+        'lua: 'fut,
+        Arg: 'fut + ToLuaMulti<'lua>,
+        Ret: 'fut + FromLuaMulti<'lua>;
+}
+
+impl<'lua, 'a> ChunkExt<'lua, 'a> for Chunk<'lua, 'a> {
+    fn exec_async<'fut>(
+        self,
+        ctx: Context<'lua>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'fut>>
+    where
+        'lua: 'fut,
+    {
+        self.call_async(ctx, ())
+    }
+
+    /*
+    // TODO: implement
+    fn eval_async<'fut, Ret>(
+        self,
+        ctx: Context<'lua>,
+    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'fut>>
+    where
+        'lua: 'fut,
+        Ret: 'fut + FromLuaMulti<'lua>,
+    {
+        // First, try interpreting the lua as an expression by adding "return", then as a
+        // statement. This is the same thing the actual lua repl, as well as rlua, do.
+        unimplemented!()
+    }
+    */
+
+    fn call_async<'fut, Arg, Ret>(
+        self,
+        ctx: Context<'lua>,
+        args: Arg,
+    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'fut>>
+    where
+        'lua: 'fut,
+        Arg: 'fut + ToLuaMulti<'lua>,
+        Ret: 'fut + FromLuaMulti<'lua>,
+    {
+        let fun = match self.into_function() {
+            Ok(fun) => fun,
+            Err(e) => return Box::pin(future::err(e)),
+        };
+
+        fun.call_async(ctx, args)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +330,62 @@ mod tests {
                 .expect("failed to call"),
                 2
             );
+        });
+    }
+
+    #[test]
+    fn async_chunk() {
+        let lua = Lua::new();
+
+        lua.context(|lua_ctx| {
+            let globals = lua_ctx.globals();
+
+            let f = lua_ctx
+                .create_async_function(|_, a: usize| async move {
+                    futures_timer::Delay::new(Duration::from_millis(50)).await;
+                    Ok(a + 1)
+                })
+                .unwrap();
+            globals.set("f", f).unwrap();
+
+            executor::block_on(
+                lua_ctx
+                    .load(
+                        r#"
+                            bar = f(1)
+                            function foo(a)
+                                return a + bar
+                            end
+                        "#,
+                    )
+                    .set_name(b"foo")
+                    .expect("failed to set name")
+                    .exec_async(lua_ctx),
+            )
+            .expect("failed to exec");
+
+            assert_eq!(
+                lua_ctx
+                    .load(r#"foo(1)"#)
+                    .eval::<usize>()
+                    .expect("failed to eval"),
+                3,
+            );
+
+            /*
+            // TODO: uncomment
+            assert_eq!(
+                executor::block_on(
+                    lua_ctx
+                        .load(r#"f(2)"#)
+                        .set_name(b"example")
+                        .expect("failed to set name")
+                        .eval_async::<usize>(lua_ctx)
+                )
+                .expect("failed to eval"),
+                3
+            );
+            */
         });
     }
 }
