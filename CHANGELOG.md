@@ -3,6 +3,7 @@
 * Add multiple `async` variants:
   * `ChunkExt::exec_async`, `ChunkExt::call_async`
   * `FunctionExt::create_async_function_mut`
+  * `ScopeExt::create_async_function`
 
 # 0.2.0 (2020-04-04)
 

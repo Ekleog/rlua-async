@@ -18,14 +18,15 @@ use std::{
 
 use futures::future;
 use rlua::{
-    Chunk, Context, FromLuaMulti, Function, MultiValue, Result, Thread, ThreadStatus, ToLuaMulti,
+    Chunk, Context, FromLuaMulti, Function, MultiValue, Result, Scope, Thread, ThreadStatus,
+    ToLuaMulti,
 };
 use scoped_tls::scoped_thread_local;
 
 /// A "prelude" that provides all the extension traits that need to be in scope for the
 /// `async`-related functions to be usable.
 pub mod prelude {
-    pub use super::{ChunkExt, ContextExt, FunctionExt};
+    pub use super::{ChunkExt, ContextExt, FunctionExt, ScopeExt};
 }
 
 // Safety invariant: This always points to a valid `task::Context`.
@@ -65,6 +66,7 @@ pub trait ContextExt<'lua> {
         F: 'static + Send + FnMut(Context<'lua>, Arg) -> RetFut;
 }
 
+// TODO: figure out a way to share code with scoped_poller_fn below?
 fn poller_fn<'lua, Ret, RetFut>(
     ctx: Context<'lua>,
     mut fut: Pin<Box<RetFut>>,
@@ -97,7 +99,6 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
         RetFut: 'static + Send + Future<Output = Result<Ret>>,
         F: 'static + Send + Fn(Context<'lua>, Arg) -> RetFut,
     {
-        // TODO: unify with `create_async_function_mut` (need to think about lifetimes)
         let wrapped_fun = self.create_function(move |ctx, arg| {
             let fut = Box::pin(func(ctx, arg)); // TODO: maybe we can avoid this pin?
             poller_fn(ctx, fut)
@@ -113,18 +114,80 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
     where
         Arg: FromLuaMulti<'lua>,
         Ret: ToLuaMulti<'lua>,
-        // TODO: 'static below should probably be 'lua instead -- need to figure out a way to work
-        // around the 'static bound on create_function_mut
         RetFut: 'static + Send + Future<Output = Result<Ret>>,
         F: 'static + Send + FnMut(Context<'lua>, Arg) -> RetFut,
     {
-        // TODO: unify with `create_async_function` (need to think about lifetimes)
         let wrapped_fun = self.create_function_mut(move |ctx, arg| {
             let fut = Box::pin(func(ctx, arg)); // TODO: maybe we can avoid this pin?
             poller_fn(ctx, fut)
         })?;
 
         self.load(MAKE_POLLER)
+            .set_name(b"coroutine yield helper")?
+            .eval::<Function<'lua>>()? // TODO: find some way to cache this eval, maybe?
+            .call(wrapped_fun)
+    }
+}
+
+/// Extension trait for [`rlua::Scope`]
+pub trait ScopeExt<'lua, 'scope> {
+    /// Wraps a Rust function or closure, creating a callable Lua function handle to it. See also
+    /// [`rlua::Scope::create_function`] and [`ContextExt::create_async_function`].
+    fn create_async_function<'callback, Arg, Ret, RetFut, F>(
+        &'callback self,
+        ctx: Context<'lua>,
+        func: F,
+    ) -> Result<Function<'lua>>
+    where
+        Arg: FromLuaMulti<'callback>,
+        Ret: ToLuaMulti<'callback>,
+        RetFut: 'scope + Send + Future<Output = Result<Ret>>,
+        F: 'scope + Fn(Context<'callback>, Arg) -> RetFut;
+}
+
+// TODO: figure out a way to share code with poller_fn above?
+fn scoped_poller_fn<'lua, 'scope, 'callback, Ret, RetFut>(
+    scop: &'callback Scope<'lua, 'scope>,
+    mut fut: Pin<Box<RetFut>>,
+) -> Result<Function<'lua>>
+where
+    'lua: 'scope,
+    'scope: 'callback,
+    Ret: ToLuaMulti<'callback>,
+    RetFut: 'scope + Send + Future<Output = Result<Ret>>,
+{
+    scop.create_function_mut(move |ctx, _: MultiValue<'lua>| -> Result<MultiValue<'lua>> {
+        FUTURE_CTX.with(|fut_ctx| {
+            let fut_ctx_ref = unsafe { &mut *(*fut_ctx as *mut task::Context) };
+            match Future::poll(fut.as_mut(), fut_ctx_ref) {
+                Poll::Pending => ToLuaMulti::to_lua_multi((rlua::Value::Nil, false), ctx),
+                Poll::Ready(v) => {
+                    let v = ToLuaMulti::to_lua_multi(v?, ctx)?.into_vec();
+                    ToLuaMulti::to_lua_multi((v, true), ctx)
+                }
+            }
+        })
+    })
+}
+
+impl<'lua, 'scope> ScopeExt<'lua, 'scope> for Scope<'lua, 'scope> {
+    fn create_async_function<'callback, Arg, Ret, RetFut, F>(
+        &'callback self,
+        ctx: Context<'lua>,
+        func: F,
+    ) -> Result<Function<'lua>>
+    where
+        Arg: FromLuaMulti<'callback>,
+        Ret: ToLuaMulti<'callback>,
+        RetFut: 'scope + Send + Future<Output = Result<Ret>>,
+        F: 'scope + Fn(Context<'callback>, Arg) -> RetFut,
+    {
+        let wrapped_fun = self.create_function(move |ctx, arg| {
+            let fut = Box::pin(func(ctx, arg)); // TODO: maybe we can avoid this pin?
+            scoped_poller_fn(self, fut)
+        })?;
+
+        ctx.load(MAKE_POLLER)
             .set_name(b"coroutine yield helper")?
             .eval::<Function<'lua>>()? // TODO: find some way to cache this eval, maybe?
             .call(wrapped_fun)
