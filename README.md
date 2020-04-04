@@ -1,8 +1,9 @@
 # rlua-async [![Crates.io](https://img.shields.io/crates/v/rlua-async.svg)](https://crates.io/crates/rlua-async) [![Documentation](https://docs.rs/rlua-async/badge.svg)](https://docs.rs/rlua-async)
 
-`rlua-async` provides a way for Rust code using `rlua` to seamlessly interface
-with Lua code, the only condition being that the Lua code must not make use of
-coroutines, as it is the way the `async` handling is proxied through Lua.
+`rlua-async` provides a way for asynchronous Rust code using `rlua` to
+seamlessly interface with Lua code, the only condition being that the Lua code
+must not make use of coroutines, as it is the way the `async` handling is
+proxied through Lua.
 
 ## Make `async` builtins available to Lua code
 
