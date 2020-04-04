@@ -54,10 +54,7 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
                 FUTURE_CTX.with(|fut_ctx| {
                     let fut_ctx_ref = unsafe { &mut *(*fut_ctx as *mut task::Context) };
                     match Future::poll(fut.as_mut(), fut_ctx_ref) {
-                        // TODO: the first `false` below should really be a `nil`, but it looks
-                        // like `ToLua` is not implemented for `()`, so let's just use a boolean
-                        // instead.
-                        Poll::Pending => ToLuaMulti::to_lua_multi((false, false), ctx),
+                        Poll::Pending => ToLuaMulti::to_lua_multi((rlua::Value::Nil, false), ctx),
                         Poll::Ready(v) => ToLuaMulti::to_lua_multi((v?, true), ctx),
                     }
                 })
