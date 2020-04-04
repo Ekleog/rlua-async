@@ -47,6 +47,8 @@ pub trait ContextExt<'lua> {
     where
         Arg: FromLuaMulti<'lua>,
         Ret: ToLuaMulti<'lua>,
+        // TODO: 'static below should probably be 'lua instead -- need to figure out a way to work
+        // around the 'static bound on create_function
         RetFut: 'static + Send + Future<Output = Result<Ret>>,
         F: 'static + Send + Fn(Context<'lua>, Arg) -> RetFut;
 }
@@ -56,8 +58,6 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
     where
         Arg: FromLuaMulti<'lua>,
         Ret: ToLuaMulti<'lua>,
-        // TODO: 'static below should probably be 'lua instead -- need to figure out a way to work
-        // around the 'static bound on create_function
         RetFut: 'static + Send + Future<Output = Result<Ret>>,
         F: 'static + Send + Fn(Context<'lua>, Arg) -> RetFut,
     {
@@ -157,7 +157,7 @@ pub trait FunctionExt<'lua> {
         &self,
         ctx: Context<'lua>,
         args: Arg,
-    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'fut>>
+    ) -> Pin<Box<dyn 'fut + Future<Output = Result<Ret>>>>
     where
         'lua: 'fut,
         Arg: 'fut + ToLuaMulti<'lua>,
@@ -169,7 +169,7 @@ impl<'lua> FunctionExt<'lua> for Function<'lua> {
         &self,
         ctx: Context<'lua>,
         args: Arg,
-    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'fut>>
+    ) -> Pin<Box<dyn 'fut + Future<Output = Result<Ret>>>>
     where
         'lua: 'fut,
         Arg: 'fut + ToLuaMulti<'lua>,
@@ -199,7 +199,7 @@ pub trait ChunkExt<'lua, 'a> {
     fn exec_async<'fut>(
         self,
         ctx: Context<'lua>,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'fut>>
+    ) -> Pin<Box<dyn 'fut + Future<Output = Result<()>>>>
     where
         'lua: 'fut;
 
@@ -209,7 +209,7 @@ pub trait ChunkExt<'lua, 'a> {
     fn eval_async<'fut, Ret>(
         self,
         ctx: Context<'lua>,
-    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'fut>>
+    ) -> Pin<Box<dyn 'fut + Future<Output = Result<Ret>>>>
     where
         'lua: 'fut,
         Ret: 'fut + FromLuaMulti<'lua>;
@@ -221,7 +221,7 @@ pub trait ChunkExt<'lua, 'a> {
         self,
         ctx: Context<'lua>,
         args: Arg,
-    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'fut>>
+    ) -> Pin<Box<dyn 'fut + Future<Output = Result<Ret>>>>
     where
         'lua: 'fut,
         Arg: 'fut + ToLuaMulti<'lua>,
@@ -232,7 +232,7 @@ impl<'lua, 'a> ChunkExt<'lua, 'a> for Chunk<'lua, 'a> {
     fn exec_async<'fut>(
         self,
         ctx: Context<'lua>,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'fut>>
+    ) -> Pin<Box<dyn 'fut + Future<Output = Result<()>>>>
     where
         'lua: 'fut,
     {
@@ -244,7 +244,7 @@ impl<'lua, 'a> ChunkExt<'lua, 'a> for Chunk<'lua, 'a> {
     fn eval_async<'fut, Ret>(
         self,
         ctx: Context<'lua>,
-    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'fut>>
+    ) -> Pin<Box<dyn 'fut + Future<Output = Result<Ret>>>>
     where
         'lua: 'fut,
         Ret: 'fut + FromLuaMulti<'lua>,
@@ -259,7 +259,7 @@ impl<'lua, 'a> ChunkExt<'lua, 'a> for Chunk<'lua, 'a> {
         self,
         ctx: Context<'lua>,
         args: Arg,
-    ) -> Pin<Box<dyn Future<Output = Result<Ret>> + 'fut>>
+    ) -> Pin<Box<dyn 'fut + Future<Output = Result<Ret>>>>
     where
         'lua: 'fut,
         Arg: 'fut + ToLuaMulti<'lua>,
