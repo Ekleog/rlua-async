@@ -1,4 +1,6 @@
-# 0.3.0 (???)
+# 0.3.1 (???)
+
+# 0.3.0 (2020-04-05)
 
 * Add multiple `async` variants:
   * `ChunkExt::exec_async`, `ChunkExt::call_async`

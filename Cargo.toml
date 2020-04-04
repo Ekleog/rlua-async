@@ -1,6 +1,6 @@
 [package]
 name = "rlua-async"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Léo Gaspard <leo@gaspard.io>"]
 edition = "2018"
 description = "Async support for rlua, via coroutines"
