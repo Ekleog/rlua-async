@@ -46,7 +46,7 @@ pub trait ContextExt<'lua> {
     fn create_async_function<Arg, Ret, RetFut, F>(self, func: F) -> Result<Function<'lua>>
     where
         Arg: FromLuaMulti<'lua>,
-        Ret: ToLua<'lua>,
+        Ret: ToLuaMulti<'lua>,
         RetFut: 'static + Send + Future<Output = Result<Ret>>,
         F: 'static + Send + Fn(Context<'lua>, Arg) -> RetFut;
 }
