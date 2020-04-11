@@ -1,4 +1,9 @@
-# 0.3.1 (???)
+# 0.4.1 (???)
+
+# 0.4.0 (2020-04-11)
+
+* Add multiple `async` variants:
+  * `ScopeExt::create_async_function` and `ScopeExt::create_async_function_mut`
 
 # 0.3.0 (2020-04-05)
 
