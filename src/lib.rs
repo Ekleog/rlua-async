@@ -146,7 +146,7 @@ where
     Arg: for<'all> FromLuaMulti<'all>,
     Ret: for<'all> ToLuaMulti<'all>,
     RetFut: 'scope + Future<Output = Result<Ret>>,
-    F: 'scope + for<'all> Fn(Context<'all>, Arg) -> RetFut,
+    F: 'scope + for<'all> FnMut(Context<'all>, Arg) -> RetFut,
 {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method_mut("set_arg", |ctx, this, arg: Arg| {
@@ -188,9 +188,10 @@ pub trait ScopeExt<'lua, 'scope> {
     /// Wraps a Rust function or closure, creating a callable Lua function handle to it. See also
     /// [`rlua::Scope::create_function`] and [`ContextExt::create_async_function`].
     ///
-    /// The `where` clause stipulates two additional constraints compared to
+    /// The `where` clause stipulates a few additional constraints compared to
     /// [`rlua::Scope::create_function`]. This is required for compiling the implementation, and
-    /// should not be an issue, as the lifetimes should always follow them.
+    /// should not be an issue. If it is, please report a bug to `rlua-async` with instructions on
+    /// how to reproduce and your use case.
     fn create_async_function<Arg, Ret, RetFut, F>(
         &self,
         ctx: Context<'lua>,
@@ -201,6 +202,19 @@ pub trait ScopeExt<'lua, 'scope> {
         Ret: 'scope + for<'all> ToLuaMulti<'all>,
         RetFut: 'scope + Future<Output = Result<Ret>>,
         F: 'scope + for<'all> Fn(Context<'all>, Arg) -> RetFut;
+
+    /// Wraps a mutable Rust function or closure, creating a callable Lua function handle to it.
+    /// See [`rlua_async::ScopeExt::create_async_function`] for more details.
+    fn create_async_function_mut<Arg, Ret, RetFut, F>(
+        &self,
+        ctx: Context<'lua>,
+        func: F,
+    ) -> Result<Function<'lua>>
+    where
+        Arg: 'scope + for<'all> FromLuaMulti<'all>,
+        Ret: 'scope + for<'all> ToLuaMulti<'all>,
+        RetFut: 'scope + Future<Output = Result<Ret>>,
+        F: 'scope + for<'all> FnMut(Context<'all>, Arg) -> RetFut;
 }
 
 impl<'lua, 'scope> ScopeExt<'lua, 'scope> for Scope<'lua, 'scope> {
@@ -216,7 +230,24 @@ impl<'lua, 'scope> ScopeExt<'lua, 'scope> for Scope<'lua, 'scope> {
         F: 'scope + for<'all> Fn(Context<'all>, Arg) -> RetFut,
     {
         let ud = self.create_nonstatic_userdata(FutGen::new(func))?;
+        ctx.load(MAKE_USERDATA_POLLER)
+            .set_name(b"coroutine yield helper")?
+            .eval::<Function<'lua>>()? // TODO: find some way to cache this eval, maybe?
+            .call(ud)
+    }
 
+    fn create_async_function_mut<Arg, Ret, RetFut, F>(
+        &self,
+        ctx: Context<'lua>,
+        func: F,
+    ) -> Result<Function<'lua>>
+    where
+        Arg: 'scope + for<'all> FromLuaMulti<'all>,
+        Ret: 'scope + for<'all> ToLuaMulti<'all>,
+        RetFut: 'scope + Future<Output = Result<Ret>>,
+        F: 'scope + for<'all> FnMut(Context<'all>, Arg) -> RetFut,
+    {
+        let ud = self.create_nonstatic_userdata(FutGen::new(func))?;
         ctx.load(MAKE_USERDATA_POLLER)
             .set_name(b"coroutine yield helper")?
             .eval::<Function<'lua>>()? // TODO: find some way to cache this eval, maybe?
@@ -613,6 +644,45 @@ mod tests {
                 let f: Function = scope
                     .create_async_function(lua, move |_, ()| {
                         rc_clone.set(rc_clone.get() + 21);
+                        future::ok(())
+                    })
+                    .unwrap();
+                assert_eq!(Rc::strong_count(&rc), 2);
+                lua.globals().set("bad", f.clone()).unwrap();
+                assert_eq!(Rc::strong_count(&rc), 2);
+                executor::block_on(f.call_async::<_, ()>(lua, ())).expect("call failed");
+                assert_eq!(Rc::strong_count(&rc), 2);
+                executor::block_on(f.call_async::<_, ()>(lua, ())).expect("call failed");
+                assert_eq!(Rc::strong_count(&rc), 2);
+            });
+            assert_eq!(rc.get(), 42);
+            assert_eq!(Rc::strong_count(&rc), 1);
+
+            let call_res = executor::block_on(
+                lua.globals()
+                    .get::<_, Function>("bad")
+                    .unwrap()
+                    .call_async::<_, ()>(lua, ()),
+            );
+            match call_res {
+                Err(Error::CallbackError { .. }) => {}
+                r => panic!("improper return for destructed function: {:?}", r),
+            };
+        });
+    }
+
+    #[test]
+    fn scopes_async_fn_mut() {
+        Lua::new().context(|lua| {
+            let rc = Rc::new(Cell::new(0));
+            lua.scope(|scope| {
+                let rc_clone = rc.clone();
+                let mut v = 0;
+                assert_eq!(Rc::strong_count(&rc), 2);
+                let f: Function = scope
+                    .create_async_function_mut(lua, move |_, ()| {
+                        v += 21;
+                        rc_clone.set(v);
                         future::ok(())
                     })
                     .unwrap();
