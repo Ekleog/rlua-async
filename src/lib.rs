@@ -1,3 +1,4 @@
+// #![feature(async_closure)] // For when the remaining scope test is useful
 //! See the [README](https://github.com/Ekleog/rlua-async) for more general information
 // TODO: uncomment when stable #![doc(include = "../README.md")]
 // TODO: also add a link to the changelog somewhere (as a module?)
@@ -12,7 +13,6 @@
 use std::{
     future::Future,
     marker::PhantomData,
-    mem,
     pin::Pin,
     task::{self, Poll},
 };
@@ -125,19 +125,52 @@ impl<'lua> ContextExt<'lua> for Context<'lua> {
     }
 }
 
-struct FutToPoll<Ret>(Pin<Box<dyn 'static + Send + Future<Output = Result<Ret>>>>);
+struct FutGen<Arg, RetFut, F> {
+    gen: F,
+    cur_fut: Option<Pin<Box<RetFut>>>,
+    _phantom: PhantomData<fn(Arg)>,
+}
 
-impl<Ret> UserData for FutToPoll<Ret>
+impl<Arg, RetFut, F> FutGen<Arg, RetFut, F> {
+    fn new(gen: F) -> Self {
+        FutGen {
+            gen,
+            cur_fut: None,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'scope, Arg, Ret, RetFut, F> UserData for FutGen<Arg, RetFut, F>
 where
+    Arg: for<'all> FromLuaMulti<'all>,
     Ret: for<'all> ToLuaMulti<'all>,
+    RetFut: 'scope + Future<Output = Result<Ret>>,
+    F: 'scope + for<'all> Fn(Context<'all>, Arg) -> RetFut,
 {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_method_mut("set_arg", |ctx, this, arg: Arg| {
+            assert!(
+                this.cur_fut.is_none(),
+                "called set_arg without first polling previous future to completion"
+            );
+            this.cur_fut = Some(Box::pin((this.gen)(ctx, arg)));
+            Ok(())
+        });
+
         methods.add_method_mut("poll", |ctx, this, _: ()| {
+            let mut fut = this
+                .cur_fut
+                .take()
+                .expect("called poll without first calling set_arg");
             FUTURE_CTX.with(|fut_ctx| {
                 // Safety: See comment on FUTURE_CTX
                 let fut_ctx_ref = unsafe { &mut *(*fut_ctx as *mut task::Context) };
-                match Future::poll(this.0.as_mut(), fut_ctx_ref) {
-                    Poll::Pending => ToLuaMulti::to_lua_multi((rlua::Value::Nil, false), ctx),
+                match Future::poll(fut.as_mut(), fut_ctx_ref) {
+                    Poll::Pending => {
+                        this.cur_fut = Some(fut); // Restore future for next poll
+                        ToLuaMulti::to_lua_multi((rlua::Value::Nil, false), ctx)
+                    }
                     Poll::Ready(v) => {
                         let v = ToLuaMulti::to_lua_multi(v?, ctx)?.into_vec();
                         ToLuaMulti::to_lua_multi((v, true), ctx)
@@ -158,51 +191,36 @@ pub trait ScopeExt<'lua, 'scope> {
     /// The `where` clause stipulates two additional constraints compared to
     /// [`rlua::Scope::create_function`]. This is required for compiling the implementation, and
     /// should not be an issue, as the lifetimes should always follow them.
-    fn create_async_function<'callback, Arg, Ret, RetFut, F>(
-        &'callback self,
+    fn create_async_function<Arg, Ret, RetFut, F>(
+        &self,
         ctx: Context<'lua>,
         func: F,
     ) -> Result<Function<'lua>>
     where
-        Arg: for<'all> FromLuaMulti<'all>,
-        Ret: 'static + for<'all> ToLuaMulti<'all>,
+        Arg: 'scope + for<'all> FromLuaMulti<'all>,
+        Ret: 'scope + for<'all> ToLuaMulti<'all>,
         RetFut: 'scope + Future<Output = Result<Ret>>,
-        F: 'scope + Fn(Context<'callback>, Arg) -> RetFut;
+        F: 'scope + for<'all> Fn(Context<'all>, Arg) -> RetFut;
 }
 
 impl<'lua, 'scope> ScopeExt<'lua, 'scope> for Scope<'lua, 'scope> {
-    fn create_async_function<'callback, Arg, Ret, RetFut, F>(
-        &'callback self,
+    fn create_async_function<Arg, Ret, RetFut, F>(
+        &self,
         ctx: Context<'lua>,
         func: F,
     ) -> Result<Function<'lua>>
     where
-        Arg: for<'all> FromLuaMulti<'all>,
-        Ret: 'static + for<'all> ToLuaMulti<'all>,
+        Arg: 'scope + for<'all> FromLuaMulti<'all>,
+        Ret: 'scope + for<'all> ToLuaMulti<'all>,
         RetFut: 'scope + Future<Output = Result<Ret>>,
-        F: 'scope + Fn(Context<'callback>, Arg) -> RetFut,
+        F: 'scope + for<'all> Fn(Context<'all>, Arg) -> RetFut,
     {
-        let make_fut = self.create_function(move |ctx, arg| {
-            let scoped_fut: Pin<Box<dyn 'scope + Future<Output = Result<Ret>>>> =
-                Box::pin(func(ctx, arg));
-            // Safety: We know that the `FutToPoll` object created just below is *not* going to
-            // outlive `'scope`, thanks to it being entirely owned by `MAKE_USERDATA_POLLER`: if it
-            // were able to outlive `'scope`, it'd mean that the `make_fut` function also outlived
-            // `'scope`. And we know that's not possible, because the `make_fut` function was
-            // created with `self.create_function`, which enforces the scope. As such, we also know
-            // it's going to still be in the scope during all the evaluation, which means that the
-            // `Send` bound isn't required, given that we know the Lua VM is bound to a thread for
-            // the duration of the scope. See also https://github.com/kyren/rlua/issues/170
-            // So, the below `transmute` should be safe… or at least that's what I hope.
-            let static_fut: Pin<Box<dyn 'static + Send + Future<Output = Result<Ret>>>> =
-                unsafe { mem::transmute(scoped_fut) };
-            Ok(FutToPoll(static_fut))
-        })?;
+        let ud = self.create_nonstatic_userdata(FutGen::new(func))?;
 
         ctx.load(MAKE_USERDATA_POLLER)
             .set_name(b"coroutine yield helper")?
             .eval::<Function<'lua>>()? // TODO: find some way to cache this eval, maybe?
-            .call(make_fut)
+            .call(ud)
     }
 }
 
@@ -560,15 +578,16 @@ mod tests {
                 let f: Function = scope
                     .create_async_function(lua, async move |_, ()| {
                         futures_timer::Delay::new(Duration::from_millis(50)).await;
-                        c_ref.set(42);
+                        c_ref.set(c_ref.get() + 1);
                         futures_timer::Delay::new(Duration::from_millis(50)).await;
                         Ok(())
                     })
                     .unwrap();
                 lua.globals().set("bad", f.clone()).unwrap();
                 executor::block_on(f.call_async::<_, ()>(lua, ())).expect("call failed");
+                executor::block_on(f.call_async::<_, ()>(lua, ())).expect("call failed");
             });
-            assert_eq!(c.get(), 42);
+            assert_eq!(c.get(), 2);
 
             let call_res = executor::block_on(
                 lua.globals()
@@ -582,7 +601,7 @@ mod tests {
             };
         });
     }
-    */
+    // */
 
     #[test]
     fn scopes_do_drop_things() {
@@ -590,13 +609,18 @@ mod tests {
             let rc = Rc::new(Cell::new(0));
             lua.scope(|scope| {
                 let rc_clone = rc.clone();
+                assert_eq!(Rc::strong_count(&rc), 2);
                 let f: Function = scope
                     .create_async_function(lua, move |_, ()| {
-                        rc_clone.set(42);
+                        rc_clone.set(rc_clone.get() + 21);
                         future::ok(())
                     })
                     .unwrap();
+                assert_eq!(Rc::strong_count(&rc), 2);
                 lua.globals().set("bad", f.clone()).unwrap();
+                assert_eq!(Rc::strong_count(&rc), 2);
+                executor::block_on(f.call_async::<_, ()>(lua, ())).expect("call failed");
+                assert_eq!(Rc::strong_count(&rc), 2);
                 executor::block_on(f.call_async::<_, ()>(lua, ())).expect("call failed");
                 assert_eq!(Rc::strong_count(&rc), 2);
             });

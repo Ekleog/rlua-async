@@ -1,8 +1,8 @@
-function(f)
+function(ud)
     return function(...)
-        local fut = f(...)
+        ud:set_arg(...)
         while true do
-            local t, ready = fut:poll()
+            local t, ready = ud:poll()
             if ready then
                 return table.unpack(t)
             else
