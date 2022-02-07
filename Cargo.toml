@@ -17,7 +17,7 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 futures = "0.3.4"
-rlua = "0.17.0"
+rlua = "0.19.1"
 scoped-tls = "1.0.0"
 
 [dev-dependencies]
